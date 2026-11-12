@@ -1,15 +1,19 @@
 # AI Cyber Threat Detection & Response Platform
 
-A cybersecurity project that analyzes security logs and detects
-suspicious activities using rules and machine learning.
+An AI-powered cybersecurity platform designed to analyze
+security logs and detect suspicious activities using
+rule-based detection and machine learning.
 
 ## Planned Features
-- Security log analysis
+
+- Security log processing
 - Repeated failed-login detection
-- ML-based threat classification
-- Security dashboard and alerts
+- Machine learning-based threat classification
+- Security alert management
+- Web-based monitoring dashboard
 
 ## Technology Stack
+
 - Python
 - Pandas
 - Scikit-learn
@@ -17,5 +21,6 @@ suspicious activities using rules and machine learning.
 - PostgreSQL
 - React
 
-## Status
+## Project Status
+
 In development.

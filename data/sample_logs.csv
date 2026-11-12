@@ -8,3 +8,8 @@ timestamp,username,source_ip,event_type,status
 2026-10-15 09:02:40,arif,192.0.2.50,login,failed
 2026-10-15 09:03:00,sohail,192.0.2.11,login,success
 2026-10-15 09:04:00,arif,192.0.2.50,login,success
+2026-10-15 09:05:00,arif,192.0.2.50,login,failed
+2026-10-15 09:06:00,arif,192.0.2.50,login,failed
+2026-10-15 09:06:10,arif,192.0.2.50,login,failed
+2026-10-15 09:06:20,arif,192.0.2.50,login,failed
+2026-10-15 09:06:30,arif,192.0.2.50,login,failed

@@ -5,8 +5,18 @@ def detect_repeated_failed_logins(
     logs: pd.DataFrame,
     threshold: int = 5,
     window_minutes: int = 5,
+    success_after_failure_threshold: int = 3,
 ) -> list[dict]:
-    """Detect repeated failed logins from a source IP."""
+    """Detect brute force and a successful login after repeated failures."""
+
+    if threshold < 1:
+        raise ValueError("threshold must be at least 1")
+
+    if window_minutes < 1:
+        raise ValueError("window_minutes must be at least 1")
+
+    if success_after_failure_threshold < 1:
+        raise ValueError("success_after_failure_threshold must be at least 1")
 
     required = {
         "timestamp",
@@ -24,27 +34,48 @@ def detect_repeated_failed_logins(
         events["timestamp"], errors="raise"
     )
 
-    failed = events[
-        (events["event_type"] == "login")
-        & (events["status"] == "failed")
-    ].sort_values("timestamp")
-
     alerts = []
+    logins = events[events["event_type"] == "login"]
+    window = pd.Timedelta(minutes=window_minutes)
 
-    for source_ip, group in failed.groupby("source_ip"):
-        group = group.set_index("timestamp").sort_index()
+    for source_ip, group in logins.groupby("source_ip"):
+        group = group.sort_values("timestamp")
+        failed_times = pd.DatetimeIndex(
+            group.loc[group["status"] == "failed", "timestamp"]
+        )
+        successful_times = group.loc[
+            group["status"] == "success", "timestamp"
+        ]
 
-        counts = group["status"].rolling(
-            f"{window_minutes}min"
-        ).count()
+        failed_group = group[group["status"] == "failed"].set_index("timestamp")
+        counts = failed_group["status"].rolling(f"{window_minutes}min").count()
+        failed_attempts = int(counts.max()) if not counts.empty else 0
+        methods = []
 
-        if (counts >= threshold).any():
+        if failed_attempts >= threshold:
+            methods.append("Repeated Failed Logins")
+
+        success_after_failures = any(
+            failed_times.searchsorted(success_time, side="left")
+            - failed_times.searchsorted(success_time - window, side="right")
+            >= success_after_failure_threshold
+            for success_time in successful_times
+        )
+        if success_after_failures:
+            methods.append("Successful Login After Repeated Failures")
+
+        if methods:
             alerts.append({
                 "source_ip": source_ip,
-                "alert_type": "Repeated Failed Logins",
+                "alert_type": (
+                    "Successful Login After Repeated Failures"
+                    if success_after_failures
+                    else "Repeated Failed Logins"
+                ),
                 "severity": "High",
-                "failed_attempts": int(counts.max()),
+                "failed_attempts": failed_attempts,
                 "window_minutes": window_minutes,
+                "detection_methods": methods,
             })
 
     return alerts

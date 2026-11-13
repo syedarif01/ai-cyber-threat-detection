@@ -1,16 +1,8 @@
-import { useEffect, useState } from 'react'
-
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer
-} from 'recharts'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
 
 import './App.css'
+
+const ThreatSeverityChart = lazy(() => import('./components/ThreatSeverityChart.jsx'))
 
 const API_URL = 'http://127.0.0.1:8000'
 
@@ -113,6 +105,22 @@ const getLatestActiveIncidents = (records) => {
 
 function App() {
 
+  const [authRequired, setAuthRequired] = useState(null)
+  const [apiKey, setApiKey] = useState('')
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [authRole, setAuthRole] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authStatusError, setAuthStatusError] = useState('')
+  const canManage = authRequired === false || authRole === 'analyst'
+
+  const fetch = useCallback((url, options = {}) => window.fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+  }), [apiKey])
+
   // Main dashboard data
   const [alerts, setAlerts] = useState([])
 
@@ -123,6 +131,8 @@ function App() {
   const [loading, setLoading] = useState(false)
 
   const [error, setError] = useState('')
+
+  const [detectionWarning, setDetectionWarning] = useState('')
 
   const [activePage, setActivePage] = useState('overview')
 
@@ -172,6 +182,10 @@ const [responseAuditLogs, setResponseAuditLogs] = useState([])
 
 const [responseStatusFilter, setResponseStatusFilter] = useState('All')
 
+const [responseAuditActionFilter, setResponseAuditActionFilter] = useState('All')
+
+const [responseAuditSearch, setResponseAuditSearch] = useState('')
+
 const [responseLoading, setResponseLoading] = useState(false)
 
 const [responseError, setResponseError] = useState('')
@@ -188,12 +202,49 @@ const [analystName, setAnalystName] = useState('Security Analyst')
 
 const [selectedResponseAlertId, setSelectedResponseAlertId] = useState('')
 
+  const signIn = async event => {
+    event.preventDefault()
+    setAuthError('')
+    try {
+      const response = await window.fetch(`${API_URL}/auth/me`, {
+        headers: { Authorization: `Bearer ${apiKeyInput}` },
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.detail || 'API key was not accepted.')
+      setAuthRole(data.role)
+      setAnalystName(data.analyst_name || 'Security Analyst')
+      setApiKey(apiKeyInput)
+      setApiKeyInput('')
+      setAuthStatusError('')
+      setAuthRequired(false)
+    } catch (err) {
+      setAuthError(err.message || 'Could not sign in.')
+    }
+  }
+
+  useEffect(() => {
+    window.fetch(`${API_URL}/auth/status`)
+      .then(response => {
+        if (!response.ok) throw new Error('Authentication status could not be checked.')
+        return response.json()
+      })
+      .then(data => {
+        setAuthStatusError('')
+        setAuthRequired(Boolean(data.authentication_required))
+      })
+      .catch(() => {
+        setAuthStatusError('Could not check sign-in settings. Check that the backend is running, then try your API key.')
+        setAuthRequired(true)
+      })
+  }, [])
+
+
 
   // --------------------------------------------------
   // API HEALTH CHECK
   // --------------------------------------------------
 
-  const checkAPI = async () => {
+  const checkAPI = useCallback(async () => {
 
     try {
 
@@ -212,7 +263,7 @@ const [selectedResponseAlertId, setSelectedResponseAlertId] = useState('')
       console.error(err)
 
     }
-  }
+  }, [fetch])
 
 
   // --------------------------------------------------
@@ -265,9 +316,11 @@ const [selectedResponseAlertId, setSelectedResponseAlertId] = useState('')
 // GET /response-actions
 // --------------------------------------------------
 
-const fetchResponseActions = async () => {
-  setResponseLoading(true)
-  setResponseError('')
+const fetchResponseActions = useCallback(async ({ showLoading = true } = {}) => {
+  if (showLoading) {
+    setResponseLoading(true)
+    setResponseError('')
+  }
 
   try {
     const [response, auditResponse] = await Promise.all([
@@ -306,7 +359,7 @@ const fetchResponseActions = async () => {
   } finally {
     setResponseLoading(false)
   }
-}
+}, [fetch])
 
 
 // --------------------------------------------------
@@ -372,7 +425,6 @@ const decideResponseAction = async (actionId, decision) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           decision,
-          analyst_name: analystName.trim() || 'Security Analyst',
         }),
       }
     )
@@ -432,11 +484,12 @@ const simulateResponseAction = async (actionId) => {
   // READ-ONLY: DOES NOT EXECUTE DETECTION
   // --------------------------------------------------
 
-  const fetchAlerts = async () => {
+  const fetchAlerts = useCallback(async ({ showLoading = true } = {}) => {
 
-    setLoading(true)
-
-    setError('')
+    if (showLoading) {
+      setLoading(true)
+      setError('')
+    }
 
     try {
 
@@ -477,7 +530,32 @@ const simulateResponseAction = async (actionId) => {
       setLoading(false)
 
     }
-  }
+  }, [fetch])
+
+  // The state changes happen after asynchronous API requests; the rule cannot
+  // infer the awaits inside these helper functions.
+  // oxlint-disable react/set-state-in-effect
+  useEffect(() => {
+    if (authRequired !== false) return
+    const loadRole = async () => {
+      try {
+        const response = await fetch(`${API_URL}/auth/me`)
+        if (response.ok) {
+          const data = await response.json()
+          setAuthRole(data.role)
+          setAnalystName(data.analyst_name || 'Security Analyst')
+        }
+      } catch (err) {
+        console.error(err)
+      }
+    }
+    loadRole()
+    checkAPI()
+    fetchAlerts({ showLoading: false })
+    fetchResponseActions({ showLoading: false })
+  }, [authRequired, fetch, checkAPI, fetchAlerts, fetchResponseActions])
+  // oxlint-enable react/set-state-in-effect
+
     // --------------------------------------------------
   // MANUAL THREAT DETECTION
   // POST /detect
@@ -490,6 +568,7 @@ const simulateResponseAction = async (actionId) => {
     setLoading(true)
 
     setError('')
+    setDetectionWarning('')
 
     try {
 
@@ -509,6 +588,10 @@ const simulateResponseAction = async (actionId) => {
         )
 
       }
+
+      setDetectionWarning(
+        Array.isArray(data.warnings) ? data.warnings.join(' ') : ''
+      )
 
       const detectedAlerts = Array.isArray(data.alerts)
         ? data.alerts
@@ -903,17 +986,6 @@ const simulateResponseAction = async (actionId) => {
   // READ DATABASE ONLY
   // --------------------------------------------------
 
-  useEffect(() => {
-
-    checkAPI()
-
-    fetchAlerts()
-
-    fetchResponseActions()
-
-  }, [])
-
-
   // --------------------------------------------------
   // STATISTICS
   // --------------------------------------------------
@@ -1133,12 +1205,12 @@ const simulateResponseAction = async (actionId) => {
 
         <div className="method">
           <span>Machine Learning</span>
-          <strong>Active</strong>
+          <strong>{detectionWarning ? 'Unavailable' : 'Check during detection'}</strong>
         </div>
 
         <div className="method">
           <span>ML Model</span>
-          <strong>Random Forest</strong>
+          <strong>Random Forest (optional)</strong>
         </div>
 
       </div>
@@ -1346,7 +1418,7 @@ const simulateResponseAction = async (actionId) => {
                       : 'view-details-button'
                   }
                   onClick={() => updateIncidentStatus(option)}
-                  disabled={statusUpdating || status === option}
+                  disabled={!canManage || statusUpdating || status === option}
                 >
                   {option}
                 </button>
@@ -1408,6 +1480,7 @@ const simulateResponseAction = async (actionId) => {
               rows={5}
               maxLength={5000}
               disabled={noteSaving}
+              readOnly={!canManage}
             />
 
             <div className="note-character-count">
@@ -1418,7 +1491,7 @@ const simulateResponseAction = async (actionId) => {
               type="button"
               className="view-details-button save-note-button"
               onClick={saveAnalystNote}
-              disabled={noteSaving || !newAnalystNote.trim()}
+              disabled={!canManage || noteSaving || !newAnalystNote.trim()}
             >
               {noteSaving
                 ? 'Saving Note...'
@@ -1749,6 +1822,21 @@ const simulateResponseAction = async (actionId) => {
         : responseActions.filter(action => responseStatusFilter === 'Simulated'
           ? action.execution_status === 'Simulated'
           : action.approval_status === responseStatusFilter)
+      const auditActions = [...new Set(responseAuditLogs.map(log => log.action).filter(Boolean))].sort()
+      const auditSearchTerm = responseAuditSearch.trim().toLowerCase()
+      const visibleAuditLogs = responseAuditLogs.filter(log => {
+        const matchesAction = responseAuditActionFilter === 'All' || log.action === responseAuditActionFilter
+        const searchableText = [
+          log.action,
+          log.entity_type,
+          log.entity_id,
+          `${log.entity_type || ''} #${log.entity_id ?? '—'}`,
+          log.analyst_name,
+          log.details,
+          formatTimestamp(log.created_at),
+        ].filter(Boolean).join(' ').toLowerCase()
+        return matchesAction && (!auditSearchTerm || searchableText.includes(auditSearchTerm))
+      })
       return (
         <>
       <div className="section-heading">
@@ -1773,6 +1861,8 @@ const simulateResponseAction = async (actionId) => {
         <div><span>Rejected</span><strong>{rejectedCount}</strong></div>
         <div><span>Simulated</span><strong>{simulatedCount}</strong></div>
       </div>
+
+      {!canManage && <p className="loading-message">Viewer access is read-only. Sign in with an analyst key to change incident or response data.</p>}
 
       <div className="incident-management response-create-form">
         <h3>Create Response Action</h3>
@@ -1809,17 +1899,7 @@ const simulateResponseAction = async (actionId) => {
           <option value="Require Password Reset">Require Password Reset</option>
         </select>
 
-        <label htmlFor="response-analyst-name">Analyst Name</label>
-        <input
-          id="response-analyst-name"
-          className="search-input"
-          type="text"
-          value={analystName}
-          onChange={event => setAnalystName(event.target.value)}
-          placeholder="Enter analyst name"
-          maxLength={100}
-          disabled={responseLoading}
-        />
+        <p>Current analyst: <strong>{analystName}</strong></p>
 
         <label htmlFor="response-description">Action Description</label>
         <textarea
@@ -1837,7 +1917,7 @@ const simulateResponseAction = async (actionId) => {
           type="button"
           className="view-details-button"
           onClick={createResponseAction}
-          disabled={responseLoading || !selectedResponseAlertId}
+          disabled={!canManage || responseLoading || !selectedResponseAlertId}
         >
           {responseLoading ? 'Processing...' : 'Create Response Action'}
         </button>
@@ -1909,13 +1989,13 @@ const simulateResponseAction = async (actionId) => {
                           type="button"
                           className="view-details-button"
                           onClick={() => decideResponseAction(action.id, 'Approved')}
-                          disabled={responseLoading}
+                          disabled={!canManage || responseLoading}
                         >Approve</button>
                         <button
                           type="button"
                           className="view-details-button"
                           onClick={() => decideResponseAction(action.id, 'Rejected')}
-                          disabled={responseLoading}
+                          disabled={!canManage || responseLoading}
                         >Reject</button>
                       </div>
                     )}
@@ -1926,7 +2006,7 @@ const simulateResponseAction = async (actionId) => {
                           type="button"
                           className="view-details-button"
                           onClick={() => simulateResponseAction(action.id)}
-                          disabled={responseLoading}
+                          disabled={!canManage || responseLoading}
                         >Simulate</button>
                       )}
 
@@ -1952,16 +2032,56 @@ const simulateResponseAction = async (actionId) => {
         <div><h3>Audit History</h3><p>Recorded response action events, newest first.</p></div>
       </div>
       {responseAuditLogs.length === 0 ? <p>No response audit records are available.</p> : (
-        <div className="table-container">
-          <table>
-            <thead><tr><th>Action</th><th>Entity ID</th><th>Analyst</th><th>Details</th><th>Timestamp</th></tr></thead>
-            <tbody>{responseAuditLogs.map(log => (
-              <tr key={log.id}><td>{log.action}</td><td>{log.entity_type} #{log.entity_id ?? '—'}</td>
-                <td>{log.analyst_name || 'N/A'}</td><td>{log.details || '—'}</td>
-                <td>{formatTimestamp(log.created_at)}</td></tr>
-            ))}</tbody>
-          </table>
-        </div>
+        <>
+          <div className="response-audit-controls" role="search" aria-label="Filter audit history">
+            <label htmlFor="response-audit-action-filter">
+              Action
+              <select
+                id="response-audit-action-filter"
+                className="severity-filter"
+                value={responseAuditActionFilter}
+                onChange={event => setResponseAuditActionFilter(event.target.value)}
+              >
+                <option value="All">All actions</option>
+                {auditActions.map(action => <option key={action} value={action}>{action}</option>)}
+              </select>
+            </label>
+            <label htmlFor="response-audit-search">
+              Search audit records
+              <input
+                id="response-audit-search"
+                className="severity-filter"
+                type="search"
+                value={responseAuditSearch}
+                onChange={event => setResponseAuditSearch(event.target.value)}
+                placeholder="Search action, entity, analyst or details..."
+              />
+            </label>
+            <button
+              type="button"
+              className="view-details-button"
+              onClick={() => { setResponseAuditActionFilter('All'); setResponseAuditSearch('') }}
+              disabled={responseAuditActionFilter === 'All' && !responseAuditSearch}
+            >
+              Clear audit filters
+            </button>
+          </div>
+          <p className="loading-message" aria-live="polite">
+            Showing {visibleAuditLogs.length} of {responseAuditLogs.length} audit records
+          </p>
+          {visibleAuditLogs.length === 0 ? <p>No audit records match these filters.</p> : (
+            <div className="table-container">
+              <table>
+                <thead><tr><th>Action</th><th>Entity ID</th><th>Analyst</th><th>Details</th><th>Timestamp</th></tr></thead>
+                <tbody>{visibleAuditLogs.map(log => (
+                  <tr key={log.id}><td>{log.action}</td><td>{log.entity_type} #{log.entity_id ?? '—'}</td>
+                    <td>{log.analyst_name || 'N/A'}</td><td>{log.details || '—'}</td>
+                    <td>{formatTimestamp(log.created_at)}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
         </>
       )
@@ -2109,6 +2229,26 @@ const simulateResponseAction = async (actionId) => {
   // MAIN DASHBOARD
   // --------------------------------------------------
 
+  if (authRequired === null) {
+    return <main className="auth-screen"><p>Connecting to CyberGuard AI…</p></main>
+  }
+
+  if (authRequired && !apiKey) {
+    return (
+      <main className="auth-screen">
+        <form className="auth-form" onSubmit={signIn}>
+          <h1>CyberGuard AI</h1>
+          <p>Enter your analyst or viewer API key to continue.</p>
+          <label htmlFor="api-key">API key</label>
+          <input id="api-key" type="password" autoComplete="off" value={apiKeyInput}
+            onChange={event => setApiKeyInput(event.target.value)} required />
+          {(authError || authStatusError) && <p className="error-message" role="alert">{authError || authStatusError}</p>}
+          <button className="view-details-button" type="submit">Sign in</button>
+        </form>
+      </main>
+    )
+  }
+
   return (
 
     <div className="dashboard">
@@ -2240,6 +2380,7 @@ const simulateResponseAction = async (actionId) => {
             <p>
               AI-powered cyber threat detection and response
             </p>
+            {authRole && <small>Access: {authRole} · {analystName}</small>}
           </div>
 
 
@@ -2270,6 +2411,12 @@ const simulateResponseAction = async (actionId) => {
                 : '↻ Refresh Data'}
             </button>
 
+            {apiKey && <button className="refresh-button" onClick={() => {
+              setApiKey('')
+              setAuthRole('')
+              setAuthRequired(true)
+            }}>Sign out</button>}
+
 
             {/* MANUAL DETECTION BUTTON */}
 
@@ -2290,6 +2437,12 @@ const simulateResponseAction = async (actionId) => {
           </div>
 
         </header>
+
+        {detectionWarning && (
+          <p className="warning-message" role="status">
+            {detectionWarning}
+          </p>
+        )}
 
 
         {/* OVERVIEW PAGE */}
@@ -2334,7 +2487,7 @@ const simulateResponseAction = async (actionId) => {
 
               <p>Rule-based detection: Active</p>
 
-              <p>Machine learning detection: Active</p>
+              <p>Machine learning detection: {detectionWarning ? 'Unavailable' : 'Check during detection'}</p>
 
               <p>Backend API: {apiStatus}</p>
 
@@ -2399,7 +2552,7 @@ const simulateResponseAction = async (actionId) => {
 
               <div className="method">
                 <span>Detection model</span>
-                <strong>Random Forest</strong>
+                <strong>{detectionWarning ? 'Unavailable' : 'Check during detection'}</strong>
               </div>
 
             </section>
@@ -2415,47 +2568,9 @@ const simulateResponseAction = async (actionId) => {
                 Number of active incidents grouped by severity
               </p>
 
-              <div className="chart-container">
-
-                <ResponsiveContainer width="100%" height={300}>
-
-                  <BarChart data={chartData}>
-
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="#263449"
-                    />
-
-                    <XAxis
-                      dataKey="severity"
-                      stroke="#94a3b8"
-                    />
-
-                    <YAxis
-                      allowDecimals={false}
-                      stroke="#94a3b8"
-                    />
-
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: '#111b2e',
-                        border: '1px solid #263449',
-                        borderRadius: '8px',
-                        color: '#ffffff'
-                      }}
-                    />
-
-                    <Bar
-                      dataKey="threats"
-                      fill="#3b82f6"
-                      radius={[6, 6, 0, 0]}
-                    />
-
-                  </BarChart>
-
-                </ResponsiveContainer>
-
-              </div>
+              <Suspense fallback={<p className="loading-message">Loading chart...</p>}>
+                <ThreatSeverityChart data={chartData} />
+              </Suspense>
 
             </section>
 

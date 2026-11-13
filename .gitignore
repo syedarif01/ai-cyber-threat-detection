@@ -1,6 +1,30 @@
+﻿# Python
 .venv/
 __pycache__/
 *.py[cod]
+
+# Environment variables
 .env
+
+# Testing and IDE
 .pytest_cache/
 .vscode/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Internal QA
+docs/_qa/
+
+# Local backup
+data/sample_logs_backup_before_test.csv
+
+# Local evaluation datasets
+data/phase3_train.csv
+data/phase3_test.csv
+
+docs/deliverables/*.docx
+docs/deliverables/*.pptx
+
+docs/final-year-demo-and-viva.md

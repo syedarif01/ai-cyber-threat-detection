@@ -336,6 +336,45 @@ button {
   margin-bottom: 15px;
 }
 
+.warning-message {
+  color: #fbbf24;
+  background: rgba(217, 119, 6, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  padding: 11px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  margin: 12px 0;
+}
+
+.auth-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: #0b1220;
+  color: #e2e8f0;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  background: #111b2e;
+}
+
+.auth-form input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #475569;
+  border-radius: 8px;
+  background: #0b1220;
+  color: #f8fafc;
+}
+
 /* Search and filter controls */
 
 .alert-controls {
@@ -1287,4 +1326,39 @@ body {
 
 .response-audit-heading {
   margin-top: 28px;
+}
+
+.response-audit-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.4fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin: 14px 0 8px;
+}
+
+.response-audit-controls label {
+  display: grid;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.response-audit-controls input,
+.response-audit-controls select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.response-audit-controls button {
+  min-height: 42px;
+}
+
+@media (max-width: 768px) {
+  .response-audit-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .response-audit-controls button {
+    width: 100%;
+  }
 }

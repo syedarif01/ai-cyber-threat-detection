@@ -16,6 +16,12 @@ from .database_service import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 LOG_FILE = PROJECT_ROOT / "data" / "sample_logs.csv"
+LAST_DETECTION_WARNINGS = []
+
+
+def get_last_detection_warnings() -> list[str]:
+    """Return runtime limitations from the most recent detection run."""
+    return list(LAST_DETECTION_WARNINGS)
 
 
 # --------------------------------------------------
@@ -135,6 +141,9 @@ def run_detection():
     All database operations use the same session.
     """
 
+    global LAST_DETECTION_WARNINGS
+    LAST_DETECTION_WARNINGS = []
+
     if not LOG_FILE.exists():
 
         raise FileNotFoundError(
@@ -192,8 +201,8 @@ def run_detection():
             logs
         )
 
-        rule_alert_ips = {
-            alert["source_ip"]
+        rule_alerts_by_ip = {
+            alert["source_ip"]: alert
             for alert in rule_alerts
         }
 
@@ -247,9 +256,17 @@ def run_detection():
 
             )
 
+            if prediction.get("model_available") is False:
+                warning = (
+                    "ML classifier unavailable; this run used rule-based "
+                    "detections only."
+                )
+                if warning not in LAST_DETECTION_WARNINGS:
+                    LAST_DETECTION_WARNINGS.append(warning)
+
             rule_triggered = (
                 features["source_ip"]
-                in rule_alert_ips
+                in rule_alerts_by_ip
             )
 
             ml_triggered = (
@@ -266,9 +283,11 @@ def run_detection():
                 reasons = []
 
                 if rule_triggered:
-
-                    reasons.append(
-                        "Repeated failed login rule"
+                    reasons.extend(
+                        rule_alerts_by_ip[features["source_ip"]].get(
+                            "detection_methods",
+                            ["Repeated Failed Logins"],
+                        )
                     )
 
                 if ml_triggered:

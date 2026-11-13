@@ -1,17 +1,23 @@
 
 import json
+import logging
 from datetime import datetime, timezone
-from typing import Optional
+import ipaddress
+import os
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from src.database import SessionLocal
-from src.detection_engine import run_detection
+from src.detection_engine import run_detection, get_last_detection_warnings
 from src.database_service import get_alert_history
 from src.models import ThreatAlert, ResponseAction, AuditLog
+from src.api_security import access_keys_configured, role_for_key
 
 
 app = FastAPI(
@@ -19,6 +25,7 @@ app = FastAPI(
     description="AI-powered cybersecurity threat detection and incident management",
     version="1.4.0"
 )
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------
@@ -32,9 +39,39 @@ app.add_middleware(
         "http://127.0.0.1:5173"
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def enforce_api_access(request, call_next):
+    if request.method == "OPTIONS" or request.url.path in {"/", "/health", "/auth/status"}:
+        return await call_next(request)
+
+    if not access_keys_configured():
+        host = request.client.host if request.client else ""
+        try:
+            is_local = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            is_local = host == "testclient"
+        if not is_local:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Configure API keys before exposing this service beyond localhost."},
+            )
+        request.state.role = "analyst"
+        return await call_next(request)
+
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    role = role_for_key(token if scheme.lower() == "bearer" else None)
+    if not role:
+        return JSONResponse(status_code=401, content={"detail": "Valid bearer API key required."})
+    if role == "viewer" and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        return JSONResponse(status_code=403, content={"detail": "Viewer access is read-only."})
+    request.state.role = role
+    return await call_next(request)
 
 
 # --------------------------------------------------
@@ -60,37 +97,55 @@ ALLOWED_DECISIONS = [
     "Rejected"
 ]
 
+def configured_analyst_name() -> str:
+    return os.getenv("CYBERGUARD_ANALYST_NAME", "Security Analyst")[:100]
+
 
 # --------------------------------------------------
 # REQUEST SCHEMAS
 # --------------------------------------------------
 
 class StatusUpdate(BaseModel):
-    status: str
-    analyst_name: Optional[str] = Field(
-        default="Security Analyst",
-        max_length=100
-    )
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["New", "Acknowledged", "Investigating", "Resolved"]
 
 
 class AnalystNote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     note: str = Field(
         min_length=1,
-        max_length=5000
+        max_length=5000,
+        strict=True,
     )
+
+    @field_validator("note")
+    @classmethod
+    def note_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Note must not be blank")
+        return value
 
 
 class ResponseActionCreate(BaseModel):
-    action_type: str
-    description: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    action_type: Literal[
+        "Investigate Source IP",
+        "Review Authentication Logs",
+        "Monitor Suspicious Activity",
+        "Temporarily Block IP",
+        "Require Password Reset",
+    ]
+    description: Optional[str] = Field(default=None, max_length=2000, strict=True)
 
 
 class ResponseDecision(BaseModel):
-    decision: str
-    analyst_name: Optional[str] = Field(
-        default=None,
-        max_length=100
-    )
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["Approved", "Rejected"]
 
 
 # --------------------------------------------------
@@ -288,6 +343,19 @@ def health_check():
     }
 
 
+@app.get("/auth/status")
+def auth_status():
+    return {"authentication_required": access_keys_configured()}
+
+
+@app.get("/auth/me")
+def auth_me(request: Request):
+    return {
+        "role": getattr(request.state, "role", "analyst"),
+        "analyst_name": os.getenv("CYBERGUARD_ANALYST_NAME", "Security Analyst"),
+    }
+
+
 # --------------------------------------------------
 # DETECTION ENDPOINTS
 # --------------------------------------------------
@@ -326,14 +394,16 @@ def execute_detection():
 
         return {
             "message": "Threat detection completed successfully",
+            "warnings": get_last_detection_warnings(),
             "total_alerts": len(database_alerts),
             "alerts": database_alerts
         }
 
-    except Exception as error:
+    except Exception:
+        logger.exception("Threat detection failed")
         raise HTTPException(
             status_code=500,
-            detail=f"Detection failed: {str(error)}"
+            detail="Detection failed. Check the backend log for details."
         )
 
 
@@ -440,7 +510,7 @@ def create_response_action(
             action="Response Action Created",
             entity_type="ResponseAction",
             entity_id=action.id,
-            analyst_name="Security Analyst",
+            analyst_name=configured_analyst_name(),
             details=(
                 f"Created '{action.action_type}' "
                 f"for incident #{alert.id}, "
@@ -522,7 +592,7 @@ def update_alert_status(
             action="Incident Status Updated",
             entity_type="ThreatAlert",
             entity_id=alert.id,
-            analyst_name=update.analyst_name,
+            analyst_name=configured_analyst_name(),
             details=(
                 f"Incident status changed from "
                 f"{previous_status} to {update.status} "
@@ -542,6 +612,40 @@ def update_alert_status(
         db.rollback()
         raise
 
+    finally:
+        db.close()
+
+
+@app.patch("/alerts/{alert_id}/notes")
+def add_analyst_note(alert_id: int, note_data: AnalystNote):
+    """Append a validated analyst note and record the change in audit history."""
+    db: Session = SessionLocal()
+    try:
+        alert = db.query(ThreatAlert).filter(ThreatAlert.id == alert_id).first()
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+
+        timestamp = current_time().isoformat(timespec="seconds")
+        entry = f"[{timestamp}] {note_data.note}"
+        alert.analyst_notes = (
+            f"{alert.analyst_notes}\n\n{entry}"
+            if alert.analyst_notes
+            else entry
+        )
+        record_audit_log(
+            db=db,
+            action="Analyst Note Added",
+            entity_type="ThreatAlert",
+            entity_id=alert.id,
+        analyst_name=configured_analyst_name(),
+            details=f"Analyst note added to incident #{alert.id}.",
+        )
+        db.commit()
+        db.refresh(alert)
+        return {"message": "Analyst note saved successfully", "alert": alert_to_dict(alert)}
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
@@ -667,7 +771,7 @@ def decide_response_action(
             )
 
         action.approval_status = decision_data.decision
-        action.analyst_name = decision_data.analyst_name
+        action.analyst_name = configured_analyst_name()
 
         if decision_data.decision == "Rejected":
             action.execution_status = "Rejected"
@@ -678,7 +782,7 @@ def decide_response_action(
             action=f"Response Action {decision_data.decision}",
             entity_type="ResponseAction",
             entity_id=action.id,
-            analyst_name=decision_data.analyst_name,
+            analyst_name=configured_analyst_name(),
             details=(
                 f"{decision_data.decision} response action "
                 f"'{action.action_type}' for incident #{action.alert_id}, "
@@ -749,7 +853,7 @@ def simulate_response_action(action_id: int):
             action="Response Action Simulated",
             entity_type="ResponseAction",
             entity_id=action.id,
-            analyst_name=action.analyst_name or "Security Analyst",
+            analyst_name=action.analyst_name or configured_analyst_name(),
             details=(
                 f"Simulated response action '{action.action_type}' "
                 f"for incident #{action.alert_id}, "

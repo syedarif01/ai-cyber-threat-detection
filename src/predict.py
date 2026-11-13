@@ -20,8 +20,18 @@ def predict_activity(
             "Model not found. Run python src/ml_model.py first."
         )
 
-    # Load the saved model
-    saved_model = joblib.load(MODEL_FILE)
+    # Load the saved model. Some managed Windows environments block
+    # third-party native extensions used by scikit-learn; in that case the
+    # caller can continue with rule-based detections and surface a warning.
+    try:
+        saved_model = joblib.load(MODEL_FILE)
+    except (ImportError, OSError):
+        return {
+            "prediction": "Unavailable",
+            "severity": "Unknown",
+            "model_available": False,
+        }
+
     model = saved_model["model"]
     features = saved_model["features"]
 
@@ -49,6 +59,7 @@ def predict_activity(
     return {
         "prediction": result,
         "severity": severity,
+        "model_available": True,
     }
 
 if __name__ == "__main__":

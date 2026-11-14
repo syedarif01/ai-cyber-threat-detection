@@ -13,7 +13,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # Create PostgreSQL database connection URL
 database_url = URL.create(
-    drivername="postgresql+psycopg",
+     drivername="postgresql+pg8000",
     username=os.getenv("DB_USER"),
     password=os.getenv("DB_PASSWORD"),
     host=os.getenv("DB_HOST", "localhost"),
